@@ -2,71 +2,84 @@ import streamlit as st
 import pandas as pd
 import io
 
-st.set_page_config(page_title="지원장학 분석 도구", layout="wide")
+st.set_page_config(page_title="지원장학 보고서 데이터 통합 도구", layout="wide")
 
-# --- 초기화 로직 ---
-# 'clear_count'라는 변수를 세션에 저장하여, 이 값이 바뀔 때마다 업로더를 새로 고침합니다.
-if 'clear_count' not in st.session_state:
-    st.session_state.clear_count = 0
+st.title("📊 지원장학 보고서 유목화 분석용 통합 도구")
+st.markdown("""
+이 앱은 여러 개의 '지원장학 보고서' 파일을 하나로 합쳐서 AI 분석(유목화)을 하기 좋은 형태로 만들어줍니다.
+1. 왼쪽 사이드바에서 40여 개의 파일을 한꺼번에 업로드하세요.
+2. 아래 표에서 통합된 내용을 확인하고 **'통합 데이터 다운로드'**를 클릭하세요.
+""")
 
-def reset_app():
-    st.session_state.clear_count += 1
-    st.rerun()
+def extract_school_data(file):
+    """
+    개별 파일에서 학교명과 주요 내용을 추출하는 함수
+    """
+    try:
+        # 파일 읽기 (샘플 구조상 상단 8행은 메타정보, 9행이 헤더)
+        # CSV 인코딩은 한국어 환경에 맞춰 'cp949' 또는 'utf-8-sig' 시도
+        try:
+            df = pd.read_csv(file, skiprows=8, encoding='utf-8-sig')
+        except:
+            df = pd.read_csv(file, skiprows=8, encoding='cp949')
+            
+        # 파일명에서 학교명 추출 (예: '중_월촌중학교...' -> '월촌중학교')
+        file_name = file.name
+        school_name = file_name.split('_')[1].split(' ')[0] if '_' in file_name else file_name
+        
+        # '내용' 컬럼이 비어있지 않은 행만 필터링
+        # 특히 '학교 현안문제' 및 '교육활동 관련 지원 요청 사항'이 포함된 행 추출
+        valid_df = df[df['내용'].notna()].copy()
+        
+        # 학교명 컬럼 추가
+        valid_df.insert(0, '학교명', school_name)
+        
+        return valid_df
+    except Exception as e:
+        st.error(f"파일 처리 중 오류 발생 ({file.name}): {e}")
+        return None
 
-st.title("🏫 학교별 현안 및 아쉬운 점 분석기")
-
-# 사이드바에 초기화 버튼 배치
-with st.sidebar:
-    st.header("설정")
-    if st.button("🔄 전체 데이터 초기화"):
-        reset_app()
-    st.info("초기화 버튼을 누르면 업로드된 모든 파일과 분석 결과가 삭제됩니다.")
-
-# 파일 업로더에 key를 부여하여 초기화 시 강제로 새로고침되게 함
-uploaded_files = st.file_uploader(
-    "엑셀/CSV 파일들을 선택하세요 (최대 40개)", 
-    type=["xlsx", "csv"], 
-    accept_multiple_files=True,
-    key=f"uploader_{st.session_state.clear_count}"
+# 사이드바에서 파일 업로드
+uploaded_files = st.sidebar.file_uploader(
+    "지원장학 보고서 파일들을 선택하세요 (CSV 권장)", 
+    type=['csv', 'xlsx'], 
+    accept_multiple_files=True
 )
 
 if uploaded_files:
     all_rows = []
+    
     for file in uploaded_files:
-        # 파일명에서 학교명 추출 로직 (파일명: '중_월촌중학교...')
-        school_name = file.name.split(" ")[0].replace("중_", "").replace("고_", "")
-        try:
-            # 8행 건너뛰고 데이터 읽기
-            df = pd.read_excel(file, skiprows=8) if file.name.endswith('xlsx') else pd.read_csv(file, skiprows=8)
-            
-            for _, row in df.iterrows():
-                gubun = str(row.get('구 분', ''))
-                # '현안문제' 및 '아쉬운 점' 위주 추출
-                if any(k in gubun for k in ['현안', '요청', '아쉬운']):
-                    all_rows.append({
-                        '학교명': school_name,
-                        '구분': gubun,
-                        '내용(아쉬운 점)': str(row.get('내용', '')),
-                        '관련부서': str(row.get('관련부서', '')),
-                        '부서의견': str(row.get('관련부서 의견', ''))
-                    })
-        except: continue
+        data = extract_school_data(file)
+        if data is not None:
+            all_rows.append(data)
     
-    master_df = pd.DataFrame(all_rows)
-    
-    if not master_df.empty:
-        st.subheader(f"📊 분석 결과 (총 {len(uploaded_files)}개교)")
+    if all_rows:
+        merged_df = pd.concat(all_rows, ignore_index=True)
         
-        # 필터 및 결과 화면
-        search_keyword = st.text_input("특정 키워드 검색 (예: 공사, 인력)")
-        display_df = master_df
-        if search_keyword:
-            display_df = master_df[master_df['내용(아쉬운 점)'].str.contains(search_keyword, na=False)]
-            
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        # 데이터 정제: '구 분' 열에서 번호 제거 등 깔끔하게 정리 (필요시)
+        merged_df['구 분'] = merged_df['구 분'].ffill() # 병합된 셀 처리 대비
         
-        # 엑셀 다운로드
+        # 결과 표시
+        st.subheader(f"✅ 통합 완료 (총 {len(merged_df)}개의 항목)")
+        st.dataframe(merged_df, use_container_width=True)
+        
+        # 엑셀 파일로 변환하여 다운로드 제공
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            display_df.to_excel(writer, index=False)
-        st.download_button("📥 분석 결과 엑셀로 받기", data=output.getvalue(), file_name="현안분석_결과.xlsx")
+            merged_df.to_excel(writer, index=False, sheet_name='통합데이터')
+        
+        processed_data = output.getvalue()
+        
+        st.download_button(
+            label="📥 통합된 엑셀 파일 다운로드",
+            data=processed_data,
+            file_name="통합_지원장학_보고서_분석용.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        st.info("💡 팁: 다운로드한 파일을 ChatGPT나 Claude에 업로드하고 '유목화해서 분석해줘'라고 요청하세요.")
+    else:
+        st.warning("데이터를 추출할 수 있는 파일이 없습니다.")
+else:
+    st.info("파일을 업로드하면 분석이 시작됩니다.")
