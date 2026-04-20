@@ -4,20 +4,22 @@ import io
 
 st.set_page_config(page_title="지원장학 보고서 통합 도구", layout="wide")
 
-# 세션 상태 초기화 (파일 업로드 위젯 초기화용)
-if 'file_uploader_key' not in st.state:
+# [수정] st.state -> st.session_state로 변경
+if 'file_uploader_key' not in st.session_state:
     st.session_state['file_uploader_key'] = 0
 
 def reset_files():
     """업로드된 파일 목록을 초기화하는 함수"""
     st.session_state['file_uploader_key'] += 1
+    # 최신 버전에서는 st.rerun()을 사용합니다.
     st.rerun()
 
 st.title("📊 지원장학 보고서 유목화 분석용 통합 도구")
 
-# 파일 업로드 및 초기화 버튼 layout
+# 파일 업로드 및 초기화 버튼 레이아웃
 col1, col2 = st.columns([4, 1])
 with col1:
+    # key값에 session_state를 반영하여 초기화 가능하게 설정
     uploaded_files = st.file_uploader(
         "지원장학 보고서 파일들을 선택하세요 (CSV 또는 XLSX)", 
         type=['csv', 'xlsx'], 
@@ -26,54 +28,50 @@ with col1:
     )
 with col2:
     st.write("---")
-    if st.button("🔄 파일 초기화", help="업로드된 모든 파일을 목록에서 삭제합니다."):
+    if st.button("🔄 파일 일괄 초기화"):
         reset_files()
 
 def extract_school_data(file):
-    """
-    파일에서 데이터를 추출하는 개선된 로직
-    """
     try:
         # 1. 파일 읽기 (CSV/Excel 구분 및 인코딩 처리)
         if file.name.endswith('.csv'):
             try:
-                # 먼저 utf-8-sig로 시도
                 df_raw = pd.read_csv(file, encoding='utf-8-sig')
             except:
-                # 실패 시 한국어 인코딩(cp949)으로 시도
                 file.seek(0)
                 df_raw = pd.read_csv(file, encoding='cp949')
         else:
             df_raw = pd.read_excel(file)
 
-        # 2. 헤더 찾기 (샘플 파일처럼 '순'이나 '구 분'이 있는 행을 헤더로 설정)
+        # 2. 헤더 찾기 (데이터가 시작되는 행 검색)
         header_row_index = None
         for i, row in df_raw.iterrows():
-            if '구 분' in row.values and '내용' in row.values:
+            row_values = [str(val) for val in row.values]
+            if '구 분' in row_values and '내용' in row_values:
                 header_row_index = i
                 break
         
         if header_row_index is None:
-            return None # 헤더를 찾지 못한 경우
+            return None
 
         # 3. 데이터 프레임 재설정
         df = df_raw.iloc[header_row_index + 1:].copy()
         df.columns = df_raw.iloc[header_row_index].values
         
-        # 4. 학교명 추출 (파일명에서 추출하거나 파일 내부 특정 셀에서 추출 가능)
-        # 파일명 형식: "중_월촌중학교..."에서 학교명만 추출
+        # 4. 학교명 추출 (파일명 규칙: 중_학교명... 또는 파일명 그대로)
         file_name = file.name
         school_name = file_name.split('_')[1].split(' ')[0] if '_' in file_name else file_name
         
-        # 5. 유효한 데이터 필터링 ('내용' 항목이 있는 것만)
-        # '순'이 숫자가 아니거나 '일시' 같은 행은 제외하고 '학교 현안문제' 등만 남김
-        target_categories = ['학교 현안문제', '교육활동 관련 지원 요청 사항']
+        # 5. 유의미한 항목만 추출 (현안 및 지원 요청 사항)
+        # 문자열로 변환 후 '현안' 또는 '지원' 단어가 포함된 행 필터링
         valid_df = df[df['구 분'].astype(str).str.contains('현안|지원|요청', na=False)].copy()
         
         if not valid_df.empty:
             valid_df.insert(0, '학교명', school_name)
-            # 불필요한 열 제거 및 이름 정리
-            return valid_df[['학교명', '구 분', '내용', '관련부서', '관련부서 의견']]
+            # 필요한 열만 선택 (열 이름이 정확하지 않을 수 있어 에러 방지 처리)
+            cols = ['학교명', '구 분', '내용', '관련부서', '관련부서 의견']
+            available_cols = [c for c in cols if c in valid_df.columns]
+            return valid_df[available_cols]
         
         return None
 
@@ -108,4 +106,6 @@ if uploaded_files:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.error("파일에서 데이터를 추출하지 못했습니다. 파일의 '구 분' 또는 '내용' 열 이름을 확인해주세요.")
+        st.error("파일에서 분석 가능한 데이터를 찾지 못했습니다. 파일 구조를 확인해주세요.")
+else:
+    st.info("학교별 지원장학 보고서(CSV/XLSX)를 업로드해 주세요.")
